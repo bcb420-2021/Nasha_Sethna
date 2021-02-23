@@ -1,0 +1,425 @@
+---
+title: "Nasha Sethna - BCB420 Assignment 1"
+output:
+  html_document:
+    df_print: paged
+---
+
+## 1. GEO Dataset and Description
+**Link & GSE Accession :** [GSE146190](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE146190)
+
+### Dataset Info
+**Submission date:** Mar 02 2020
+
+**Last update date:** Feb 16 2021
+
+**Samples and Overall design:** Upper colonoscopy (duodenal) biopsies from 5 control(CTR) and 11 celiac disease patients (PED) were taken, total RNA was extracted and RNA-sequencing was performed
+
+**Note:** As shown in the workflow, the samples only included 5 healthy controls and **6 CeD patients**.
+
+### Platform Info
+**Platform title :** Illumina HiSeq 2500 (Homo sapiens)
+
+**Submission data :** Mar 14 2013
+
+**Last update data :** Mar 27 2019
+
+**Organims :** Homo sapiens (taxid: 9606)
+
+**Number of GEO datasets that use this techology :**
+(code: length(current_gpl_info$series_id))
+
+**Number of GEO samples that use this technology :**
+(code: length(current_gpl_info$sample_id))
+
+
+**Acquiring dataset and Platform info**
+```{r}
+library(BiocManager)
+library(GEOmetadb)
+library(knitr)
+
+#Get info for dataset
+gse <- getGEO("GSE146190",GSEMatrix=FALSE)
+kable(data.frame(head(Meta(gse))), format = "html")
+
+
+#Platform Info:
+current_gpl <- names(GPLList(gse))[1]
+current_gpl_info <- Meta(getGEO(current_gpl))
+title<-current_gpl_info$title
+last_up<-current_gpl_info$last_update_date
+org<-current_gpl_info$organism
+sub_date<-current_gpl_info$submission_date
+num_samples<-length(current_gpl_info$sample_id)
+num_series<-length(current_gpl_info$series_id)
+```
+
+
+**The first 5 rows and columns of the raw dataset**
+```{r}
+#Get expression data
+#Since the experiment was testing RNA in celiac disease patients vs healthy ones I'm going to call my dataset "ced_exp"
+sfiles = getGEOSuppFiles('GSE146190')
+fnames = rownames(sfiles)
+# there is only one supplemental file
+ced_exp = read.delim(fnames[1],header=TRUE,
+check.names = FALSE)
+#display first 5 rows and 5 columns
+kable(ced_exp[1:5,1:5], format = "html")
+```
+
+
+## 2. Cleaning Dataset
+```{r}
+#How many genes do we have exp data for?
+dim(ced_exp)
+#45728 11
+#about 46000 genes and 11 samples (doesn't add up with the description)
+
+#Check columns -> I'm going to assume we'll have 11 PED (the code for celiac disease) columns and 5 CTR columns
+#but let's see....
+colnames(ced_exp)
+
+#So looking at the data, it looks like the rownames are the ensembl gene IDs and we've only got 6 PEDs and 5 CTRs...which totals to 11 but doesn't really match the description, which says there are 11 disease replicates...
+
+#Well, based on this, looks like there are only 6 celiac disease patients and 5 controls ¯\_(ツ)_/¯
+
+#I want the rownames as the first column
+#From stackoverflow: https://stackoverflow.com/questions/29511215/convert-row-names-into-first-column
+library(data.table)
+#I'm going to call the new column gname even though it contains ensembl IDs for easier integration with the code used from class
+ced_exp<-setDT(ced_exp, keep.rownames = "gname")[]
+#View(ced_exp)
+
+
+#Summarized gene counts
+summarized_gene_counts <- sort(table(ced_exp$gname),
+decreasing = TRUE)
+
+#Translate out counts into counts per million using the edgeR package
+library(edgeR)
+cpms = cpm(ced_exp[,2:12]) #only take the 11 samples
+rownames(cpms) <- ced_exp$gname
+
+
+# Get rid of low counts. in this case, counts greater than 5 should be kept because 5 is my 
+keep = rowSums(cpms >1) >=5
+ced_exp_filtered = ced_exp[keep,]
+#View(ced_exp_filtered)
+
+dim(ced_exp_filtered)
+#17825 12
+
+#Counts of genes after cleaning
+summarized_gene_counts_filtered <- sort(table(ced_exp_filtered$gname))
+
+#There are no duplicated genes, though there weren't any in the initial dataset either?
+summarized_gene_counts_filtered[which(summarized_gene_counts_filtered>1)]
+
+
+
+
+```
+### Summary of cleaning
+
+**Initial Dataset:** 45728 rows w/ expression values for 11 samples
+
+**After Cleaning:** 17825 rows w/ expression values for 11 samples
+
+
+## 3. Initial Normalization
+
+**Boxplot and MA plots of cleant data (not normalized)**
+```{r}
+#Distribution of data
+data2plot <- log2(cpm(ced_exp_filtered[,2:12]))
+boxplot(data2plot, xlab = "Samples", ylab = "log2 CPM", las = 2, cex = 0.5, cex.lab = 0.5, cex.axis = 0.5, main = "Celiac Disease vs Healthy Intestinal Cell RNASeq Samples")
+
+#MA plot
+#plotting 1 celiac disease vs 1 healthy sample
+plotMA(log2(ced_exp_filtered[,c(3,4)]), ylab="M - ratio log expression", main = "Celiac disease vs healthy intestinal cells")
+
+#Looks like it should (only deviating on the outside)
+
+```
+
+
+### Normalization w/ edgeR
+```{r}
+
+#TMM w/ edgeR
+library(edgeR)
+
+#Create samples table
+#I should split by "_" because my sample names are PED_48 and CTR_12
+samples <- data.frame(lapply(colnames(ced_exp)[2:12], FUN=function(x){unlist(strsplit(x, split = "\\_"))[c(1,2)]}))
+colnames(samples) <- colnames(ced_exp)[2:12]
+rownames(samples) <- c("cell_type","patients")
+samples <- data.frame(t(samples))
+
+#Get normalized data
+filtered_data_matrix <- as.matrix(ced_exp_filtered[,2:12])
+rownames(filtered_data_matrix) <- ced_exp_filtered$gname
+d = DGEList(counts=filtered_data_matrix, group=samples$cell_type)
+d = calcNormFactors(d)
+
+#CPM of normalized data
+normalized_counts <- cpm(d)
+```
+**Now that I've got my normalized counts, I'll use those values after I do identifier mapping then create a non-normalized table with the same genes after mapping**
+
+
+
+## 4. Identifier mapping
+```{r}
+#Initializing biomaRt package
+library(biomaRt)
+listMarts()
+
+#Use ensembl
+ensembl <- useMart("ensembl")
+datasets <- listDatasets(ensembl)
+kable(head(datasets),format = "html")
+
+#From lecture found hsapiens_gene_ensembl was the best dataset
+ensembl = useDataset("hsapiens_gene_ensembl",mart=ensembl)
+
+#How many filters are associated with this dataset?
+how_many_filters <- dim(listFilters(ensembl)) #448!
+
+#Went through the search in the lecture to find the right filter and attribute:
+  #biomart_human_filters <- listFilters(ensembl)
+  #kable(biomart_human_filters[
+    #grep(biomart_human_filters$name,pattern="ensembl"),],
+        #format="html")
+  #search hgnc symbols
+  #kable(searchAttributes(mart = ensembl, 'hgnc') , format="html")
+
+
+#I have ensembl IDs that look like this "ENSG00000000003". These are ensembl gene IDs, so I should use ensembl_gene_id and hgnc_symbol
+
+#Save the conversion
+#Check to see if ced_id_conversion file exists (computationally intensive)
+conversion_stash <- "ced_id_conversion.rds"
+if(file.exists(conversion_stash)){
+  ced_id_conversion <- readRDS(conversion_stash)
+} else {
+  ced_id_conversion <- getBM(attributes = c("ensembl_gene_id","hgnc_symbol"),
+                            filters = c("ensembl_gene_id"),
+                            values = ced_exp_filtered$gname,
+                            mart = ensembl)
+  saveRDS(ced_id_conversion, conversion_stash)
+}
+
+#So let's check how many genes I've lost in this process
+nrow(ced_exp_filtered)-nrow(ced_id_conversion)
+#Lost 604 genes during this initial conversion
+
+#Merge the normalized data with the gene names
+normalized_counts_annot <- merge(ced_id_conversion,normalized_counts,by.x = 1, by.y = 0, all.y=TRUE)
+```
+
+### Remove unmapped genes
+
+**Specifics of unmapped genes**
+```{r}
+kable(normalized_counts_annot[16879:16882, 1:2])
+```
+The table above shows that some of the genes that were unmapped don't actually show up as "NA" rather as an empty string: "".  The ones I've checked manually by searching in ensembl are associated with lnc RNA, which isn't very important for the purposes of this analysis so I'm going to just exclude them. The "" isn't recognized by R as NA or character(0), so instead I used as.character("") and the identical() function to recognize these unmapped genes.
+
+
+**Removal process**
+```{r}
+#How many genes are mapped as NA?
+ensembl_id_missing_gene <- normalized_counts_annot$ensembl_gene_id[
+  which(is.na(normalized_counts_annot$hgnc_symbol))]
+
+NA_length <- length(ensembl_id_missing_gene)
+#605 genes are NA
+
+#I'm going to create vectors of the indices associated with these genes so I can exclude them.  There might be a way to do this with less keystrokes but I'm going to use a for loop so I can iterate over all the values
+missing_IDs<-vector()
+for (i in seq_along(normalized_counts_annot$hgnc_symbol)){
+  if (identical(normalized_counts_annot$hgnc_symbol[i], as.character(""))==TRUE) {
+    missing_IDs<-c(missing_IDs, i)
+  }
+}
+#Check how many of these empty character
+empty_char_length <- length(missing_IDs)
+#1439 genes
+
+#In the grand scheme of how many genes there were to begin with (~46000) this doesn't seem like a lot, especially because I'm assuming a lot of these lnc RNAs were missed in the initial cleaning process (They might have had high cpms?)
+
+#Create a vector of the NA indices 
+missing_IDs_2<-vector()
+for (i in seq_along(normalized_counts_annot$hgnc_symbol)) {
+  if (is.na(normalized_counts_annot$hgnc_symbol[i])) {
+    missing_IDs_2<-c(missing_IDs_2, i)
+  }
+}
+#Check how many NA genes.  This should match the which statement from above (605)
+NA_length <- length(missing_IDs_2)
+#605 -- all good here
+
+
+#Another thing I want to check is if there are any duplicated ensembl gene IDs
+duplicate_genes<-which(duplicated(normalized_counts_annot$ensembl_gene_id)==TRUE)
+#index 16626, AKA ENSG00000254876 is a duplicate ID.  I'm going to remove it's row in addition to all the missing IDs above
+
+ 
+#New data frame without all the NA, "" and the duplicated rows
+no_missing_annot<-normalized_counts_annot[-c(missing_IDs,missing_IDs_2, 16626),]
+#View(new_annot)
+any(is.na(no_missing_annot$hgnc_symbol))
+#FALSE
+
+```
+I have removed all of the unmapped gene IDs and am now going to create my final dataframe with the normalized counts
+
+**Number of genes before mapping:** 17825
+**Number of genes after mapping and removal of unmapped genes:** 15781
+
+
+## 5. Final Dataframes
+
+### Dataframe with normalized counts (for assignment submission)
+
+**First 5 rows and columns shown**
+```{r}
+#Make the rownames the hgnc symbols
+rownames(no_missing_annot)<-no_missing_annot$hgnc_symbol
+
+#ced_exp_data is my FINAL DATAFRAME.  It's row names are the hgnc symbols and the columns include the NORMALIZED DATA for each of the 11 samples
+ced_exp_data<-no_missing_annot[,-c(1,2)]
+kable(ced_exp_data[1:5,1:5])
+```
+
+
+## 6. Plots
+
+### Retrieve unnormalized data
+```{r}
+#I'm going to create a data frame of unnormalized data with the corrected genes
+cpms = cpm(ced_exp_filtered[,2:12])
+rownames(cpms) <- ced_exp_filtered$gname
+cpms<-data.frame(cpms)
+setDT(cpms, keep.rownames = "gname")
+#Get the data
+ced_not_normal_annot<-data.frame()
+for (i in seq_along(cpms$gname)){
+  if (cpms$gname[i] %in% no_missing_annot$ensembl_gene_id == TRUE){
+    ced_not_normal_annot<-rbind(ced_not_normal_annot, cpms[i,])
+  }
+}
+
+#Check where the two differ in terms of genes
+identical(ced_not_normal_annot$gname, no_missing_annot$ensembl_gene_id)
+#TRUE
+#They don't differ, so I can just assign hgnc symbols in the same order as the no_missing_annot data frame
+
+
+#For some reason, this is a data table rather than data.frame, so I'm making it a data frame
+ced_not_normal_annot<-as.data.frame(ced_not_normal_annot)
+
+#Assign the row names as hgnc symbols
+rownames(ced_not_normal_annot)<-no_missing_annot$hgnc_symbol
+ced_not_normal<-ced_not_normal_annot[,-1]
+#View(ced_not_normal)
+```
+
+### Final two data frames with hgnc symbols and data (normalized and unnormal)
+```{r}
+#UNNORMALIZED DATA:
+ced_not_normal
+
+#UNNORMALIZED DATA:
+ced_exp_data
+```
+
+
+### Plots of normalized vs unnormalized data
+
+**Important Note:** I am only plotting in relation to cell_type because all of my samples are distinct (there are none from the same patient) and the variable I want to test is cell_type (celiac disease vs healthy)
+```{r}
+#normal data DGE List
+normal_data_matrix <- as.matrix(ced_exp_data[,1:11])
+rownames(normal_data_matrix) <- rownames(ced_exp_data)
+d = DGEList(counts=normal_data_matrix, group=samples$cell_type)
+
+#unnormal data DGE List
+unnormal_data_matrix <- as.matrix(ced_not_normal[,1:11])
+rownames(unnormal_data_matrix) <- rownames(ced_not_normal)
+e = DGEList(counts=unnormal_data_matrix, group=samples$cell_type)
+
+
+#Boxplots
+data2plot <- log2(cpm(ced_exp_data[,1:11]))
+boxplot(data2plot, xlab = "Samples", ylab = "log2 CPM", las = 2, cex = 0.5, cex.lab = 0.5, cex.axis = 0.5, main = "Normalized Celiac Disease vs Healthy Intestinal Cell RNASeq")
+
+data3plot <- log2(cpm(ced_not_normal[,1:11]))
+boxplot(data3plot, xlab = "Samples", ylab = "log2 CPM", las = 2, cex = 0.5, cex.lab = 0.5, cex.axis = 0.5, main = "Unnormalized Celiac Disease vs Healthy Intestinal Cell RNASeq")
+
+#MDS plots
+plotMDS(d, labels=rownames(samples), xlab = "Leading logFC dim1 (normalized)", 
+col = c("darkgreen","blue")[factor(samples$cell_type)])
+
+plotMDS(e, labels=rownames(samples), xlab = "Leading logFC dim1 (not normalized)",
+col = c("darkgreen","blue")[factor(samples$cell_type)])
+
+
+#Estimated Disp
+model_design <- model.matrix(~samples$cell_type + 0)
+d <- estimateDisp(d, model_design)
+
+model_design <- model.matrix(~samples$cell_type + 0)
+e <- estimateDisp(d, model_design)
+
+#Biological coefficient of variance plots
+plotBCV(d,col.tagwise = "black",col.common = "red", xlab = "Average log CPM (normalized)")
+plotBCV(e,col.tagwise = "black",col.common = "red", xlab = "Average log CPM (not normalized)")
+
+
+#Mean Variations
+plotMeanVar(d, show.raw.vars = TRUE, show.tagwise.vars=TRUE,
+show.ave.raw.vars = TRUE,
+NBline=TRUE,
+show.binned.common.disp.vars = TRUE, xlab = "Mean gene expression level (log10 scale, normalized)")
+
+plotMeanVar(e, show.raw.vars = TRUE, show.tagwise.vars=TRUE,
+show.ave.raw.vars = TRUE,
+NBline=TRUE,
+show.binned.common.disp.vars = TRUE, xlab = "Mean gene expression level (log10 scale, not normalized)")
+```
+
+## Interpretation
+
+**What are the control and test conditions of the dataset?**
+
+The controls of my dataset are 5 healthy duodenal biopsies and the test conditions are 6 duodenal biopses from histology proven celiac disease patients
+
+**Why is the dataset of interest to you?**
+
+I have always been interested in immune responses in the context of allergies and celiac disease falls into this category
+
+**Were there expression values that were not unique for specific genes? How did you handle these?**
+There was one duplicate for a pseduogene that had the same expression values and this was eliminated. 
+
+
+**Were there expression values that could not be mapped to current HUGO symbols?**
+
+Yes, there were. Many of them were associated with long non-coding RNA proteins, which were considered to be unimportant in the context of this analysis.
+
+
+**How many outliers were removed?**
+
+I did not remove any outliers because I determined all samples to be biologically relevant.
+
+
+**How did you handle replicates?**
+
+All replicates were retained in the final data frame because they were all distinct samples and therefore relevant.
+
+**What is the final coverage of your dataset?**
+
+The final coverage of my dataset is **15781** distinct genes
