@@ -354,7 +354,7 @@ Creating txt files for up and downregulated genes (commented out)...
 #write.table(x=downregulated_genes, #file=file.path("/home/rstudio/BCB420","ced_downregulated_genes.txt"), sep = #"\t", row.names = FALSE,col.names = FALSE,quote = FALSE)
 
 #Ranked genes file
-#write.table(x=data.frame(genename= exact_output_hits_withgn$hgnc_symbol, F_stat #= exact_output_hits_withgn$rank), #file=file.path("/home/rstudio/BCB420","ced_ranked_genelist.txt"), sep = "\t", #row.names = FALSE,col.names = FALSE,quote = FALSE)
+#write.table(x=data.frame(genename= exact_output_hits_withgn$hgnc_symbol, F_stat = exact_output_hits_withgn$rank), file=file.path("./","ced_ranked_genelist.rnk"), sep = "\t", row.names = FALSE,col.names = FALSE,quote = FALSE)
 
 #Differentially expressed genes
 all_differential_genes <- exact_output_hits_withgn$hgnc_symbol[
