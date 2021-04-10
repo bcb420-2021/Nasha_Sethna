@@ -4,3 +4,5 @@
 
 
 [Assignment_2 .html](https://github.com/bcb420-2021/Nasha_Sethna/blob/main/A2_NashaSethna.html)
+
+[Assignment_3.html](https://github.com/bcb420-2021/Nasha_Sethna/blob/main/A3_NashaSethna.html)
